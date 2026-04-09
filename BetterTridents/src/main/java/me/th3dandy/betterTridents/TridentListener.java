@@ -114,17 +114,6 @@ public class TridentListener implements Listener {
                         anvilView.setMaximumRepairCost(5);
                         anvilView.setRepairCost(1);
                     }
-
-                    anvilView = event.getView();
-                    if (anvilView instanceof AnvilView) {
-                        String newName = anvilView.getRenameText();
-                        if (newName != null && !newName.isEmpty()) {
-                            ItemMeta meta = result.getItemMeta();
-                            meta.setDisplayName(newName);
-                            result.setItemMeta(meta);
-                            event.setResult(result);
-                        }
-                    }
                 }
             }
         }
