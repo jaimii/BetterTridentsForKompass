@@ -42,14 +42,15 @@ public class TridentListener implements Listener {
                     finalDamage += 0.5 * level + 0.5;
                 }
 
-                if (player.getFallDistance() > 0.0F && !player.isOnGround() && !player.isInsideVehicle()) {
+                if (player.getFallDistance() > 0.0F && !isActuallyOnGround(player) && !player.isInsideVehicle()) {
                     finalDamage *= 1.5;
                 }
 
                 event.setDamage(finalDamage);
             }
         } else if (damager instanceof Trident trident) {
-            ItemStack item = trident.getItem();
+            // FIX: use getItemStack() instead of getItem()
+            ItemStack item = trident.getItemStack();
 
             if (item.containsEnchantment(Enchantment.FIRE_ASPECT)) {
                 int level = item.getEnchantmentLevel(Enchantment.FIRE_ASPECT);
@@ -81,7 +82,9 @@ public class TridentListener implements Listener {
 
     private void applyRangeAttribute(Player player, Attribute attribute, double value, NamespacedKey key) {
         AttributeInstance instance = player.getAttribute(attribute);
-        if (instance != null && instance.getModifier(key) == null) {
+        if (instance != null) {
+            instance.removeModifier(key);
+
             double amount = value - instance.getBaseValue();
 
             AttributeModifier modifier = new AttributeModifier(
@@ -96,7 +99,7 @@ public class TridentListener implements Listener {
 
     private void resetAttribute(Player player, Attribute attribute, NamespacedKey key) {
         AttributeInstance instance = player.getAttribute(attribute);
-        if (instance != null && instance.getModifier(key) != null) {
+        if (instance != null) {
             instance.removeModifier(key);
         }
     }
@@ -132,9 +135,7 @@ public class TridentListener implements Listener {
 
             if (modified) {
                 event.setResult(result);
-                // FIX 6: setRepairCost moved to AnvilView
-                AnvilView view = event.getView();
-                view.setRepairCost(1);
+                event.getView().setRepairCost(1);
             }
         }
     }
@@ -144,4 +145,12 @@ public class TridentListener implements Listener {
                 || enchantment == Enchantment.LOOTING
                 || enchantment == Enchantment.FIRE_ASPECT;
     }
+    private boolean isActuallyOnGround(Player player) {
+        Material blockType = player.getLocation().getBlock().getType();
+
+        Material blockBelow = player.getLocation().add(0, -0.1, 0).getBlock().getType();
+
+        return blockType.isSolid() || blockBelow.isSolid();
+    }
+
 }
