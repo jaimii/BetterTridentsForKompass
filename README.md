@@ -1,4 +1,4 @@
-A Minecraft plugin that creates stronger tridents. Forked and designed for Project: Kompass.
+## A Minecraft plugin that creates stronger tridents. Forked and designed for Project: Kompass.
 Original Plugin by: [Th3Dandy](https://github.com/Th3Dandy/Better-Tridents)
 
 Allows tridents to be enchanted with sword enchantments such as:
