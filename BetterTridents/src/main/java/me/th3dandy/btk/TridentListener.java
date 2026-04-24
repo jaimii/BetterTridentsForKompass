@@ -1,21 +1,28 @@
 package me.th3dandy.btk;
 
+import net.kyori.adventure.text.Component;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.Sound;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.attribute.AttributeModifier;
 import org.bukkit.enchantments.Enchantment;
-import org.bukkit.entity.Entity;
-import org.bukkit.entity.Mob;
-import org.bukkit.entity.Player;
-import org.bukkit.entity.Trident;
+import org.bukkit.entity.*;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.inventory.PrepareAnvilEvent;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.EquipmentSlotGroup;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.EnchantmentStorageMeta;
@@ -23,189 +30,206 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.loot.LootContext;
 import org.bukkit.loot.LootTable;
 
-import java.util.Collection;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
+import java.util.UUID;
 
 public class TridentListener implements Listener {
+
+    private static final float CRITICAL_HIT_THRESHOLD = 0.1F;
+    private static final double TRIDENT_BASE_DAMAGE = 10.0;
+    private static final double TRIDENT_ATTACK_SPEED = 4.2;
+    private static final double DEFAULT_ATTACK_SPEED = 4.0;
+    private static final double TRIDENT_REACH = 5.2;
+    private static final int ANVIL_REPAIR_COST = 5;
+
+    private static final Set<Enchantment> ALLOWED_ENCHANTMENTS = Set.of(
+            Enchantment.SHARPNESS,
+            Enchantment.LOOTING,
+            Enchantment.FIRE_ASPECT
+    );
 
     private final NamespacedKey rangeKey = new NamespacedKey("better_tridents", "reach_distance");
     private final NamespacedKey blockRangeKey = new NamespacedKey("better_tridents", "block_reach");
 
-    @EventHandler
-    public void onEntityDamageByEntity(EntityDamageByEntityEvent event) {
-        // (Keep your existing damage logic here)
-        Entity damager = event.getDamager();
-        Entity victim = event.getEntity();
+    private record TridentThrowRecord(UUID shooterUUID, EquipmentSlot hand, int originalSlot) {
+    }
 
-        if (damager instanceof Player player) {
-            ItemStack item = player.getInventory().getItemInMainHand();
-            if (item.getType() == Material.TRIDENT) {
-                double damage = 10.0;
-                if (item.containsEnchantment(Enchantment.SHARPNESS)) {
-                    damage += (0.5 * item.getEnchantmentLevel(Enchantment.SHARPNESS) + 0.5);
-                }
-                if (player.getFallDistance() > 0.0F && !player.isInsideVehicle() &&
-                        !player.isClimbing() && !player.isSwimming()) {
-                    damage *= 1.5;
-                }
-                event.setDamage(damage);
-            }
-        } else if (damager instanceof Trident trident) {
-            ItemStack item = trident.getItemStack();
-            if (item.containsEnchantment(Enchantment.FIRE_ASPECT)) {
-                int level = item.getEnchantmentLevel(Enchantment.FIRE_ASPECT);
-                int fireTicks = level * 80;
-                if (victim.getFireTicks() < fireTicks) {
-                    victim.setFireTicks(fireTicks);
-                }
-            }
-        }
+    private final Map<String, TridentThrowRecord> thrownTridents = new HashMap<>();
+
+    // Helpers
+    private boolean isTrident(ItemStack item) {
+        return item != null && item.getType() == Material.TRIDENT;
+    }
+
+    private boolean isAir(ItemStack item) {
+        return item == null || item.getType() == Material.AIR;
+    }
+
+    // Attribute Management
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        applyTridentAttributesIfHeld(event.getPlayer());
     }
 
     @EventHandler
-    public void onEntityDeath(EntityDeathEvent event) {
-        if (!(event.getEntity().getLastDamageCause() instanceof EntityDamageByEntityEvent damageEvent)) return;
-        if (!(damageEvent.getDamager() instanceof Trident trident)) return;
-
-        ItemStack tridentItem = trident.getItemStack();
-        if (!tridentItem.containsEnchantment(Enchantment.LOOTING)) return;
-
-        // If shooter isn't a player, we can't really apply looting
-        if (!(trident.getShooter() instanceof Player shooter)) return;
-
-        int lootingLevel = tridentItem.getEnchantmentLevel(Enchantment.LOOTING);
-
-        // Optimization: If player is holding a better looting item, let vanilla handle it
-        ItemStack realMainHand = shooter.getInventory().getItemInMainHand();
-        if (realMainHand.getType() != Material.AIR &&
-                realMainHand.getEnchantmentLevel(Enchantment.LOOTING) >= lootingLevel) {
-            return;
-        }
-
-        if (event.getEntity() instanceof Mob mob) {
-            LootTable lootTable = mob.getLootTable();
-            if (lootTable == null) return;
-
-            // 1. Swap Trident into main hand internally (Trick the system)
-            ItemStack originalItem = shooter.getInventory().getItemInMainHand();
-            shooter.getInventory().setItemInMainHand(tridentItem);
-
-            try {
-                // 2. Build context (It now reads the player's "current" hand - our trident)
-                LootContext.Builder builder = new LootContext.Builder(mob.getLocation())
-                        .lootedEntity(mob)
-                        .killer(shooter);
-
-                // 3. Generate drops
-                Collection<ItemStack> newDrops = lootTable.populateLoot(new Random(), builder.build());
-
-                event.getDrops().clear();
-                event.getDrops().addAll(newDrops);
-
-            } finally {
-                // 4. ALWAYS restore the original item, even if error occurs
-                shooter.getInventory().setItemInMainHand(originalItem);
-            }
-        }
+    public void onPlayerChangedWorld(PlayerChangedWorldEvent event) {
+        resetAttributes(event.getPlayer());
+        applyTridentAttributesIfHeld(event.getPlayer());
     }
 
-    // ... [Previous onItemHold Logic Remains the Same] ...
+    private void applyTridentAttributesIfHeld(Player player) {
+        if (isTrident(player.getInventory().getItemInMainHand())) applyTridentAttributes(player);
+    }
 
     @EventHandler
     public void onItemHold(PlayerItemHeldEvent event) {
-        Player player = event.getPlayer();
-        ItemStack item = player.getInventory().getItem(event.getNewSlot());
+        resetAttributes(event.getPlayer());
+        ItemStack item = event.getPlayer().getInventory().getItem(event.getNewSlot());
+        if (isTrident(item)) applyTridentAttributes(event.getPlayer());
+    }
 
-        resetAttributes(player);
+    @EventHandler
+    public void onPlayerDropItem(PlayerDropItemEvent event) {
+        if (isTrident(event.getItemDrop().getItemStack())) resetAttributes(event.getPlayer());
+    }
 
-        if (item != null && item.getType() == Material.TRIDENT) {
-            AttributeInstance speed = player.getAttribute(Attribute.ATTACK_SPEED);
-            if (speed != null) speed.setBaseValue(4.2);
+    private void applyTridentAttributes(Player player) {
+        AttributeInstance speed = player.getAttribute(Attribute.ATTACK_SPEED);
+        if (speed != null) speed.setBaseValue(TRIDENT_ATTACK_SPEED);
 
-            applyRangeModifier(player, Attribute.ENTITY_INTERACTION_RANGE, 5.2, rangeKey);
-            applyRangeModifier(player, Attribute.BLOCK_INTERACTION_RANGE, 5.2, blockRangeKey);
-        } else {
-            AttributeInstance speed = player.getAttribute(Attribute.ATTACK_SPEED);
-            if (speed != null) speed.setBaseValue(4.0);
-        }
+        applyRangeModifier(player, Attribute.ENTITY_INTERACTION_RANGE, TRIDENT_REACH, rangeKey);
+        applyRangeModifier(player, Attribute.BLOCK_INTERACTION_RANGE, TRIDENT_REACH, blockRangeKey);
     }
 
     private void applyRangeModifier(Player player, Attribute attribute, double targetValue, NamespacedKey key) {
         AttributeInstance instance = player.getAttribute(attribute);
-        if (instance != null) {
-            double amount = targetValue - instance.getBaseValue();
-            AttributeModifier modifier = new AttributeModifier(
-                    key, amount, AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND
-            );
-            instance.addModifier(modifier);
-        }
+        if (instance == null) return;
+        instance.removeModifier(key);
+
+        instance.addModifier(new AttributeModifier(key, targetValue - instance.getBaseValue(),
+                AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
     }
 
     private void resetAttributes(Player player) {
-        AttributeInstance entityRange = player.getAttribute(Attribute.ENTITY_INTERACTION_RANGE);
-        AttributeInstance blockRange = player.getAttribute(Attribute.BLOCK_INTERACTION_RANGE);
-        if (entityRange != null) entityRange.removeModifier(rangeKey);
-        if (blockRange != null) blockRange.removeModifier(blockRangeKey);
+        AttributeInstance speed = player.getAttribute(Attribute.ATTACK_SPEED);
+        if (speed != null) speed.setBaseValue(DEFAULT_ATTACK_SPEED);
+
+        if (player.getAttribute(Attribute.ENTITY_INTERACTION_RANGE) != null)
+            player.getAttribute(Attribute.ENTITY_INTERACTION_RANGE).removeModifier(rangeKey);
+
+        if (player.getAttribute(Attribute.BLOCK_INTERACTION_RANGE) != null)
+            player.getAttribute(Attribute.BLOCK_INTERACTION_RANGE).removeModifier(blockRangeKey);
     }
 
+    //Riptide
+    @EventHandler
+    public void onPlayerInteract(PlayerInteractEvent event) {
+        if (event.getAction() != Action.RIGHT_CLICK_AIR && event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
+        ItemStack item = event.getItem();
+        if (!isTrident(item) || !item.containsEnchantment(Enchantment.RIPTIDE)) return;
+
+        Player player = event.getPlayer();
+        boolean isWet = player.isInWater() || (player.getWorld().hasStorm() && player.getLocation().getBlock().getLightFromSky() > 0);
+
+        if (!isWet && !player.hasCooldown(Material.TRIDENT)) {
+            event.setCancelled(true);
+            int level = item.getEnchantmentLevel(Enchantment.RIPTIDE);
+            player.setVelocity(player.getLocation().getDirection().normalize().multiply(1.8 + (level * 0.5)));
+
+            player.startRiptideAttack(20, (float) TRIDENT_BASE_DAMAGE, item);
+
+            player.getWorld().playSound(player.getLocation(), Sound.ITEM_TRIDENT_RIPTIDE_1, 1.0f, 1.0f);
+            player.setCooldown(Material.TRIDENT, 15);
+        }
+    }
+
+    // Channeling
+    @EventHandler
+    public void onTridentHit(ProjectileHitEvent event) {
+        if (!(event.getEntity() instanceof Trident trident)) return;
+        ItemStack item = trident.getItemStack();
+        if (!item.containsEnchantment(Enchantment.CHANNELING)) return;
+
+        org.bukkit.Location loc = event.getHitEntity() != null ? event.getHitEntity().getLocation() :
+                (event.getHitBlock() != null ? event.getHitBlock().getLocation() : trident.getLocation());
+
+        LightningStrike strike = trident.getWorld().spawn(loc, LightningStrike.class);
+        if (trident.getShooter() instanceof Player p) strike.setCausingPlayer(p);
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL)
+    public void onTridentDamage(EntityDamageByEntityEvent event) {
+        if (event.getDamager() instanceof Player player && isTrident(player.getInventory().getItemInMainHand())) {
+            ItemStack item = player.getInventory().getItemInMainHand();
+            double damage = TRIDENT_BASE_DAMAGE;
+            if (item.containsEnchantment(Enchantment.SHARPNESS))
+                damage += (0.5 * item.getEnchantmentLevel(Enchantment.SHARPNESS) + 0.5);
+            if (player.getFallDistance() > CRITICAL_HIT_THRESHOLD && !player.isSwimming()) damage *= 1.5;
+            event.setDamage(damage);
+        } else if (event.getDamager() instanceof Trident trident) {
+            ItemStack item = trident.getItemStack();
+            if (item.containsEnchantment(Enchantment.SHARPNESS))
+                event.setDamage(event.getDamage() + (0.5 * item.getEnchantmentLevel(Enchantment.SHARPNESS) + 0.5));
+            if (item.containsEnchantment(Enchantment.FIRE_ASPECT))
+                event.getEntity().setFireTicks(item.getEnchantmentLevel(Enchantment.FIRE_ASPECT) * 80);
+        }
+    }
+
+    // Looting
+    @EventHandler
+    public void onEntityDeath(EntityDeathEvent event) {
+        if (!(event.getEntity().getLastDamageCause() instanceof EntityDamageByEntityEvent d) || !(d.getDamager() instanceof Trident t))
+            return;
+        int lvl = t.getItemStack().getEnchantmentLevel(Enchantment.LOOTING);
+        if (lvl <= 0 || !(t.getShooter() instanceof Player shooter)) return;
+
+        LootTable lt = ((Mob) event.getEntity()).getLootTable();
+        if (lt != null) {
+            event.getDrops().clear();
+            event.getDrops().addAll(lt.populateLoot(new Random(), new LootContext.Builder(event.getEntity().getLocation()).lootedEntity(event.getEntity()).killer(shooter).luck(lvl).build()));
+        }
+    }
+
+    // Anvil
     @EventHandler
     public void onAnvilUse(PrepareAnvilEvent event) {
         ItemStack first = event.getInventory().getItem(0);
         ItemStack second = event.getInventory().getItem(1);
-
         if (first == null || first.getType() != Material.TRIDENT || second == null) return;
 
-        boolean isBook = second.getType() == Material.ENCHANTED_BOOK;
-        boolean isTrident = second.getType() == Material.TRIDENT;
-
-        if (!isBook && !isTrident) return;
-
         ItemStack result = first.clone();
-        Map<Enchantment, Integer> incoming = isBook
+        Map<Enchantment, Integer> incoming = second.getType() == Material.ENCHANTED_BOOK
                 ? ((EnchantmentStorageMeta) second.getItemMeta()).getStoredEnchants()
                 : second.getEnchantments();
 
-        boolean modified = false;
+        int added = 0;
 
-        for (Map.Entry<Enchantment, Integer> entry : incoming.entrySet()) {
-            Enchantment enchant = entry.getKey();
-            if (isAllowedEnchantment(enchant)) {
-                int current = result.getEnchantmentLevel(enchant);
-                int adding = entry.getValue();
-                int finalLevel;
-
-                if (current == adding) {
-                    finalLevel = current + 1;
-                } else {
-                    finalLevel = Math.max(current, adding);
-                }
-
-                if (finalLevel > current) {
-                    result.addUnsafeEnchantment(enchant, finalLevel);
-                    modified = true;
-                }
+        for (var entry : incoming.entrySet()) {
+            if (!ALLOWED_ENCHANTMENTS.contains(entry.getKey())) continue;
+            int cur = result.getEnchantmentLevel(entry.getKey());
+            int next = (cur == entry.getValue()) ? cur + 1 : Math.max(cur, entry.getValue());
+            if (next > cur) {
+                result.addUnsafeEnchantment(entry.getKey(), next);
+                added++;
             }
         }
 
-        if (modified) {
-            String rename = event.getView().getRenameText();
+        if (added > 0) {
             ItemMeta meta = result.getItemMeta();
 
-            if (meta != null && rename != null && !rename.isEmpty()) {
-                meta.displayName(net.kyori.adventure.text.Component.text(rename));
-                result.setItemMeta(meta);
+            String renameText = event.getView().getRenameText();
+
+            if (renameText != null && !renameText.isEmpty()) {
+                meta.displayName(Component.text(renameText));
             }
 
+            result.setItemMeta(meta);
             event.setResult(result);
-            event.getView().setRepairCost(5);
+
+            event.getView().setRepairCost(Math.min(added, ANVIL_REPAIR_COST));
         }
-    }
-
-
-    private boolean isAllowedEnchantment(Enchantment enchantment) {
-        return enchantment == Enchantment.SHARPNESS
-                || enchantment == Enchantment.LOOTING
-                || enchantment == Enchantment.FIRE_ASPECT;
     }
 }
