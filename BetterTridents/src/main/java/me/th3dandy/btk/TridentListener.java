@@ -157,15 +157,23 @@ public class TridentListener implements Listener {
     public void onTridentMove(EntityMoveEvent event) {
         if (!(event.getEntity() instanceof Trident trident)) return;
 
-        if (trident.getLocation().getY() < trident.getWorld().getMinHeight()) {
+        // Manually inputting world height parameters per dimension
+        double voidThreshold = switch (trident.getWorld().getEnvironment()) {
+            case NORMAL -> -64.0 - 5.0; // Overworld
+            case NETHER -> 0.0 - 5.0; // The Nether
+            case THE_END -> 0.0 - 5.0; // The End
+            default -> -64.0 - 5.0; // Fallback
+        };
+
+        if (trident.getLocation().getY() < voidThreshold) {
             ItemStack item = trident.getItemStack();
             if (item.containsEnchantment(Enchantment.LOYALTY)) {
                 if (trident.getShooter() instanceof Player player) {
                     trident.setHasDealtDamage(true);
-                    trident.teleport(player.getLocation().add(0, 2, 0));
+                    trident.teleport(player.getLocation().add(0, 3, 0));
                 }
             } else {
-                trident.remove();
+                trident.remove(); // Clean up non-loyalty tridents in void
             }
         }
     }
